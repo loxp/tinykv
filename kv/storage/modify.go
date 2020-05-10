@@ -16,6 +16,25 @@ type Delete struct {
 	Cf  string
 }
 
+func NewPutModify(cf string, key, value []byte) Modify {
+	return Modify{
+		Data: Put{
+			Cf:    cf,
+			Key:   key,
+			Value: value,
+		},
+	}
+}
+
+func NewDeleteModify(cf string, key []byte) Modify {
+	return Modify{
+		Data: Delete{
+			Cf:  cf,
+			Key: key,
+		},
+	}
+}
+
 func (m *Modify) Key() []byte {
 	switch m.Data.(type) {
 	case Put:

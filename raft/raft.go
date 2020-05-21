@@ -163,7 +163,24 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	r := &Raft{}
+
+	// init raft with state follower
+	r.State = StateFollower
+
+	// init with config
+	r.id = c.ID
+	r.heartbeatTimeout = c.HeartbeatTick
+	r.electionTimeout = c.ElectionTick
+	r.RaftLog = newLog(c.Storage)
+
+	// use prs to store peers
+	r.Prs = make(map[uint64]*Progress)
+	for _, peerId := range c.peers {
+		r.Prs[peerId] = &Progress{}
+	}
+
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -181,21 +198,38 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	r.electionElapsed++
+	if r.electionElapsed >= r.electionTimeout {
+		// election timeout, go to election
+		r.Term++
+		r.becomeCandidate()
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.State = StateFollower
+	r.Term = term
+	r.Lead = lead
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.State = StateCandidate
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
+	r.State = StateLeader
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
 	// NOTE: Leader should propose a noop entry on its term
 }
 
@@ -205,8 +239,23 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+		if m.Term > r.Term {
+			r.Term = m.Term
+		}
 	case StateCandidate:
+		// TODO: msg的term必须比当前大
+		switch m.MsgType {
+		case pb.MessageType_MsgAppend:
+			fallthrough
+		case pb.MessageType_MsgHeartbeat:
+			r.becomeFollower(m.Term, m.From)
+			return nil
+		}
 	case StateLeader:
+		if m.Term > r.Term {
+			r.Term = m.Term
+			r.State = StateFollower
+		}
 	}
 	return nil
 }

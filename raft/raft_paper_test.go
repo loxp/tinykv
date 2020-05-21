@@ -57,6 +57,7 @@ func testUpdateTermFromMessage(t *testing.T, state StateType) {
 	case StateCandidate:
 		r.becomeCandidate()
 	case StateLeader:
+		// TODO: why becomeCandidate first?
 		r.becomeCandidate()
 		r.becomeLeader()
 	}

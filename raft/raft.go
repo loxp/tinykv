@@ -135,7 +135,7 @@ type Raft struct {
 	// heartbeat interval, should send
 	heartbeatTimeout int
 	// baseline of election interval
-	electionTick int
+	electionTick    int
 	electionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
@@ -344,7 +344,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 	// message term should not be less than current term
 	if m.Term < r.Term {
-		return ErrorOverdueTerm
+		return ErrOverdueTerm
 	}
 
 	switch m.MsgType {
@@ -354,11 +354,32 @@ func (r *Raft) Step(m pb.Message) error {
 			return nil
 		}
 	case pb.MessageType_MsgRequestVote:
-		if m.Term == r.Term {
-			reject := r.handleVoteFor(m.From)
-			r.sendRequestVoteResponse(m.From, reject)
+		if m.Term >= r.Term {
+			lastIndex := r.RaftLog.LastIndex()
+			lastTerm, err := r.RaftLog.Term(lastIndex)
+			if err != nil {
+				return ErrInvalidLogTerm
+			}
+			if m.LogTerm < lastTerm {
+				r.sendRequestVoteResponse(m.From, true)
+				return nil
+			} else if m.LogTerm > lastTerm {
+				reject := r.handleVoteFor(m.From)
+				r.sendRequestVoteResponse(m.From, reject)
+				return nil
+			} else {
+				if m.Index >= lastIndex {
+					reject := r.handleVoteFor(m.From)
+					r.sendRequestVoteResponse(m.From, reject)
+					return nil
+				} else {
+					r.sendRequestVoteResponse(m.From, true)
+					return nil
+				}
+			}
 		}
 	}
+
 	switch r.State {
 	case StateFollower:
 		if m.Term > r.Term {

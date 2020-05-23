@@ -3,5 +3,6 @@ package raft
 import "errors"
 
 var (
-	ErrorOverdueTerm = errors.New("overdue term")
+	ErrOverdueTerm    = errors.New("overdue term")
+	ErrInvalidLogTerm = errors.New("invalid log term")
 )

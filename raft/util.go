@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -127,3 +128,17 @@ func IsResponseMsg(msgt pb.MessageType) bool {
 func isHardStateEqual(a, b pb.HardState) bool {
 	return a.Term == b.Term && a.Vote == b.Vote && a.Commit == b.Commit
 }
+
+func getRespMsgType(reqMsgType pb.MessageType) pb.MessageType {
+	switch reqMsgType {
+	case pb.MessageType_MsgAppend:
+		return pb.MessageType_MsgAppendResponse
+	case pb.MessageType_MsgHeartbeat:
+		return pb.MessageType_MsgHeartbeatResponse
+	case pb.MessageType_MsgRequestVote:
+		return pb.MessageType_MsgRequestVoteResponse
+	default:
+		panic(errors.New("no response msg type"))
+	}
+}
+

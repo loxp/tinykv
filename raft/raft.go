@@ -377,6 +377,8 @@ func (r *Raft) Step(m pb.Message) error {
 		return r.stepRequestVoteResponse(m)
 	case pb.MessageType_MsgAppendResponse:
 		return r.stepAppendResponse(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		return r.stepHeartbeatResponse(m)
 		// other messages
 	default:
 		return ErrCannotHandleMsg
@@ -482,50 +484,39 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 }
 
 func (r *Raft) handleAppendOrHeartbeat(m pb.Message) {
-	switch r.State {
-	case StateLeader:
-		if m.Term >= r.Term {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+		r.adaptRaftLogs(m)
+	} else if m.Term == r.Term {
+		switch r.State {
+		case StateLeader:
 			r.becomeFollower(m.Term, m.From)
-			r.resetElectionTimer()
-		} else {
-			// do nothing
-		}
-	case StateFollower:
-		if m.Term > r.Term {
-			r.Term = m.Term
-			r.resetVoteInfo()
-			r.resetElectionTimer()
-			r.RaftLog.committed = m.Commit
-		} else if m.Term == r.Term {
+		case StateFollower:
 			r.resetElectionTimer()
 			if m.Commit > r.RaftLog.committed {
 				r.RaftLog.committed = m.Commit
 			}
-		} else {
-			// do nothing
-		}
-	case StateCandidate:
-		if m.Term >= r.Term {
+		case StateCandidate:
 			r.becomeFollower(m.Term, m.From)
-			r.RaftLog.committed = m.Commit
+			r.adaptRaftLogs(m)
 		}
+	} else {
+
 	}
 
 	// send response message
-	var respType pb.MessageType
-	if m.MsgType == pb.MessageType_MsgHeartbeat {
-		respType = pb.MessageType_MsgHeartbeatResponse
-	} else if m.MsgType == pb.MessageType_MsgAppend {
-		respType = pb.MessageType_MsgAppendResponse
-	}
 	resp := pb.Message{
-		MsgType: respType,
+		MsgType: getRespMsgType(m.MsgType),
 		To:      m.From,
 		From:    r.id,
 		Term:    r.Term,
 		Index:   r.RaftLog.LastIndex(),
 	}
 	r.pushMessageToSend(resp)
+}
+
+func (r *Raft) adaptRaftLogs(m pb.Message) {
+	r.RaftLog.committed = m.Commit
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -579,5 +570,9 @@ func (r *Raft) stepRequestVoteResponse(m pb.Message) error {
 			r.becomeLeader()
 		}
 	}
+	return nil
+}
+
+func (r *Raft) stepHeartbeatResponse(m pb.Message) error {
 	return nil
 }

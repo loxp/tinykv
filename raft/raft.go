@@ -203,6 +203,18 @@ func (r *Raft) resetVoteInfo() {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	var unstableEntryPtrs []*pb.Entry
+	for _, entry := range r.RaftLog.unstableEntries() {
+		unstableEntryPtrs = append(unstableEntryPtrs, &entry)
+	}
+	msg := pb.Message{
+		Term:    r.Term,
+		From:    r.id,
+		To:      to,
+		MsgType: pb.MessageType_MsgAppend,
+		Entries: unstableEntryPtrs,
+	}
+	r.msgs = append(r.msgs, msg)
 	return false
 }
 
@@ -338,8 +350,8 @@ func (r *Raft) becomeLeader() {
 	r.resetElectionTimer()
 	r.heartbeatElapsed = 0
 	r.resetVoteInfo()
-	r.sendHeartbeatMessagesToOthers()
 	// NOTE: Leader should propose a noop entry on its term
+	r.sendHeartbeatMessagesToOthers()
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -357,53 +369,17 @@ func (r *Raft) Step(m pb.Message) error {
 		return r.stepLocalMsgHup(m)
 	case pb.MessageType_MsgRequestVote:
 		return r.stepRequestVote(m)
+	case pb.MessageType_MsgPropose:
+		return r.stepLocalPropose(m)
 	case pb.MessageType_MsgAppend:
-		fallthrough
+		return r.stepAppend(m)
 	case pb.MessageType_MsgHeartbeat:
-		r.handleHeartbeat(m)
-		return nil
+		return r.stepHeartbeat(m)
+	case pb.MessageType_MsgAppendResponse:
+		return r.handleAppendResponse(m)
+	default:
+		return r.handleDefaultMsg(m)
 	}
-
-	switch r.State {
-	case StateFollower:
-		if m.Term > r.Term {
-			r.Term = m.Term
-			// something else need to do
-		}
-	case StateCandidate:
-		switch m.MsgType {
-		//case pb.MessageType_MsgAppend:
-		//	fallthrough
-		//case pb.MessageType_MsgHeartbeat:
-		//	r.becomeFollower(m.Term, m.From)
-		//	return nil
-		case pb.MessageType_MsgRequestVoteResponse:
-			if m.Term == r.Term && m.To == r.id && !m.Reject {
-				r.votes[m.From] = true
-				if r.isVoteWin() {
-					r.becomeLeader()
-				}
-			}
-		}
-	case StateLeader:
-		if m.Term > r.Term {
-			r.Term = m.Term
-			r.State = StateFollower
-			fmt.Printf("[Step] leader %d change to follower, term: %d, %d\n", r.id, r.Term, m.Term)
-			// TODO: handle this message
-			return nil
-		}
-		switch m.MsgType {
-		case pb.MessageType_MsgPropose:
-			if len(m.Entries) == 0 {
-				// broadcast a heartbeat message to all peers
-				r.sendHeartbeatMessagesToOthers()
-			}
-		case pb.MessageType_MsgBeat:
-			r.sendHeartbeatMessagesToOthers()
-		}
-	}
-	return nil
 }
 
 func (r *Raft) stepLocalMsgHup(m pb.Message) error {
@@ -495,18 +471,41 @@ func (r *Raft) sendHeartbeatMessagesToOthers() {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	r.manageStateTypeFromAppendAndHeartbeatMsg(m)
+
+	resp := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		//LogTerm: r.RaftLog.Term(r.RaftLog.LastIndex()),
+		//Index:   r.RaftLog.LastIndex(),
+	}
+
+	r.pushMessageToSend(resp)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	resp := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		To:      m.From,
+		From:    r.id,
+		Index:   r.RaftLog.LastIndex(),
+	}
+	r.pushMessageToSend(resp)
+	r.manageStateTypeFromAppendAndHeartbeatMsg(m)
+}
+
+func (r *Raft) manageStateTypeFromAppendAndHeartbeatMsg(m pb.Message) {
 	switch r.State {
 	case StateLeader:
-		if m.Term > r.Term {
+		if m.Term >= r.Term {
 			r.becomeFollower(m.Term, m.From)
 			r.resetElectionTimer()
 		} else {
-			// discard this message
+			// do nothing
 		}
 	case StateFollower:
 		if m.Term > r.Term {
@@ -520,7 +519,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 				r.RaftLog.committed = m.Commit
 			}
 		} else {
-			// discard this message
+			// do nothing
 		}
 	case StateCandidate:
 		if m.Term >= r.Term {
@@ -528,15 +527,6 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 			r.RaftLog.committed = m.Commit
 		}
 	}
-
-	resp := pb.Message{
-		MsgType: pb.MessageType_MsgHeartbeatResponse,
-		To:      m.From,
-		From:    r.id,
-		Index:   r.RaftLog.LastIndex(),
-	}
-
-	r.pushMessageToSend(resp)
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -552,4 +542,68 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) stepLocalPropose(m pb.Message) error {
+	for peerId := range r.Prs {
+		r.sendAppend(peerId)
+	}
+	return nil
+}
+
+func (r *Raft) handleAppendResponse(m pb.Message) error {
+	return nil
+}
+
+func (r *Raft) stepAppend(m pb.Message) error {
+	r.handleAppendEntries(m)
+	return nil
+}
+
+func (r *Raft) stepHeartbeat(m pb.Message) error {
+	r.handleHeartbeat(m)
+	return nil
+}
+
+func (r *Raft) handleDefaultMsg(m pb.Message) error {
+	switch r.State {
+	case StateFollower:
+		if m.Term > r.Term {
+			r.Term = m.Term
+			// something else need to do
+		}
+	case StateCandidate:
+		switch m.MsgType {
+		//case pb.MessageType_MsgAppend:
+		//	fallthrough
+		//case pb.MessageType_MsgHeartbeat:
+		//	r.becomeFollower(m.Term, m.From)
+		//	return nil
+		case pb.MessageType_MsgRequestVoteResponse:
+			if m.Term == r.Term && m.To == r.id && !m.Reject {
+				r.votes[m.From] = true
+				if r.isVoteWin() {
+					r.becomeLeader()
+				}
+			}
+		}
+	case StateLeader:
+		if m.Term > r.Term {
+			r.Term = m.Term
+			r.State = StateFollower
+			fmt.Printf("[Step] leader %d change to follower, term: %d, %d\n", r.id, r.Term, m.Term)
+			// TODO: handle this message
+			return nil
+		}
+		switch m.MsgType {
+		case pb.MessageType_MsgPropose:
+			if len(m.Entries) == 0 {
+				// broadcast a heartbeat message to all peers
+				r.sendHeartbeatMessagesToOthers()
+			}
+		case pb.MessageType_MsgBeat:
+			r.sendHeartbeatMessagesToOthers()
+		}
+	}
+	return nil
 }

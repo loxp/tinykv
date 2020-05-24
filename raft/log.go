@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"sort"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -71,13 +75,24 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	stabled := l.stabled
+	stabledIndex := sort.Search(len(l.entries), func(i int) bool {
+		return l.entries[i].Index >= stabled
+	})
+	if stabledIndex >= len(l.entries) {
+		return nil
+	}
+	return l.entries[stabledIndex:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	ret, err := l.storage.Entries(l.applied, l.committed)
+	if err != nil {
+		panic(err)
+	}
+	return ret
 }
 
 // LastIndex return the last index of the log entries

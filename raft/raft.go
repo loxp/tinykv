@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -358,27 +357,29 @@ func (r *Raft) becomeLeader() {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-
-	// message term should not be less than current term
-	if !IsLocalMsg(m.MsgType) && m.Term < r.Term {
-		return ErrOverdueTerm
-	}
-
 	switch m.MsgType {
+	// local messages
+	case pb.MessageType_MsgBeat:
+		return r.stepLocalBeat(m)
 	case pb.MessageType_MsgHup:
 		return r.stepLocalMsgHup(m)
-	case pb.MessageType_MsgRequestVote:
-		return r.stepRequestVote(m)
 	case pb.MessageType_MsgPropose:
 		return r.stepLocalPropose(m)
+	// request messages
+	case pb.MessageType_MsgRequestVote:
+		return r.stepRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		return r.stepAppend(m)
 	case pb.MessageType_MsgHeartbeat:
 		return r.stepHeartbeat(m)
+	// response messages
+	case pb.MessageType_MsgRequestVoteResponse:
+		return r.stepRequestVoteResponse(m)
 	case pb.MessageType_MsgAppendResponse:
-		return r.handleAppendResponse(m)
+		return r.stepAppendResponse(m)
+		// other messages
 	default:
-		return r.handleDefaultMsg(m)
+		return ErrCannotHandleMsg
 	}
 }
 
@@ -551,7 +552,7 @@ func (r *Raft) stepLocalPropose(m pb.Message) error {
 	return nil
 }
 
-func (r *Raft) handleAppendResponse(m pb.Message) error {
+func (r *Raft) stepAppendResponse(m pb.Message) error {
 	return nil
 }
 
@@ -565,44 +566,19 @@ func (r *Raft) stepHeartbeat(m pb.Message) error {
 	return nil
 }
 
-func (r *Raft) handleDefaultMsg(m pb.Message) error {
-	switch r.State {
-	case StateFollower:
-		if m.Term > r.Term {
-			r.Term = m.Term
-			// something else need to do
-		}
-	case StateCandidate:
-		switch m.MsgType {
-		//case pb.MessageType_MsgAppend:
-		//	fallthrough
-		//case pb.MessageType_MsgHeartbeat:
-		//	r.becomeFollower(m.Term, m.From)
-		//	return nil
-		case pb.MessageType_MsgRequestVoteResponse:
-			if m.Term == r.Term && m.To == r.id && !m.Reject {
-				r.votes[m.From] = true
-				if r.isVoteWin() {
-					r.becomeLeader()
-				}
-			}
-		}
-	case StateLeader:
-		if m.Term > r.Term {
-			r.Term = m.Term
-			r.State = StateFollower
-			fmt.Printf("[Step] leader %d change to follower, term: %d, %d\n", r.id, r.Term, m.Term)
-			// TODO: handle this message
-			return nil
-		}
-		switch m.MsgType {
-		case pb.MessageType_MsgPropose:
-			if len(m.Entries) == 0 {
-				// broadcast a heartbeat message to all peers
-				r.sendHeartbeatMessagesToOthers()
-			}
-		case pb.MessageType_MsgBeat:
-			r.sendHeartbeatMessagesToOthers()
+func (r *Raft) stepLocalBeat(m pb.Message) error {
+	if r.State != StateLeader {
+		return ErrInvalidRaftState
+	}
+	r.sendHeartbeatMessagesToOthers()
+	return nil
+}
+
+func (r *Raft) stepRequestVoteResponse(m pb.Message) error {
+	if m.Term == r.Term && m.To == r.id && !m.Reject {
+		r.votes[m.From] = true
+		if r.isVoteWin() {
+			r.becomeLeader()
 		}
 	}
 	return nil

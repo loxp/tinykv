@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -289,6 +290,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
+	r.resetVoteInfo()
 	r.setRandomElectionTimeout()
 	r.resetElectionTimer()
 }
@@ -332,8 +334,11 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	r.State = StateLeader
 	r.Lead = r.id
+	r.setRandomElectionTimeout()
 	r.resetElectionTimer()
 	r.heartbeatElapsed = 0
+	r.resetVoteInfo()
+	r.sendHeartbeatMessagesToOthers()
 	// NOTE: Leader should propose a noop entry on its term
 }
 
@@ -343,41 +348,20 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 
 	// message term should not be less than current term
-	if m.Term < r.Term {
+	if !IsLocalMsg(m.MsgType) && m.Term < r.Term {
 		return ErrOverdueTerm
 	}
 
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		if m.From == r.id && m.To == r.id {
-			r.changeStateToCandidateAndAction()
-			return nil
-		}
+		return r.stepLocalMsgHup(m)
 	case pb.MessageType_MsgRequestVote:
-		if m.Term >= r.Term {
-			lastIndex := r.RaftLog.LastIndex()
-			lastTerm, err := r.RaftLog.Term(lastIndex)
-			if err != nil {
-				return ErrInvalidLogTerm
-			}
-			if m.LogTerm < lastTerm {
-				r.sendRequestVoteResponse(m.From, true)
-				return nil
-			} else if m.LogTerm > lastTerm {
-				reject := r.handleVoteFor(m.From)
-				r.sendRequestVoteResponse(m.From, reject)
-				return nil
-			} else {
-				if m.Index >= lastIndex {
-					reject := r.handleVoteFor(m.From)
-					r.sendRequestVoteResponse(m.From, reject)
-					return nil
-				} else {
-					r.sendRequestVoteResponse(m.From, true)
-					return nil
-				}
-			}
-		}
+		return r.stepRequestVote(m)
+	case pb.MessageType_MsgAppend:
+		fallthrough
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+		return nil
 	}
 
 	switch r.State {
@@ -388,11 +372,11 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case StateCandidate:
 		switch m.MsgType {
-		case pb.MessageType_MsgAppend:
-			fallthrough
-		case pb.MessageType_MsgHeartbeat:
-			r.becomeFollower(m.Term, m.From)
-			return nil
+		//case pb.MessageType_MsgAppend:
+		//	fallthrough
+		//case pb.MessageType_MsgHeartbeat:
+		//	r.becomeFollower(m.Term, m.From)
+		//	return nil
 		case pb.MessageType_MsgRequestVoteResponse:
 			if m.Term == r.Term && m.To == r.id && !m.Reject {
 				r.votes[m.From] = true
@@ -405,6 +389,7 @@ func (r *Raft) Step(m pb.Message) error {
 		if m.Term > r.Term {
 			r.Term = m.Term
 			r.State = StateFollower
+			fmt.Printf("[Step] leader %d change to follower, term: %d, %d\n", r.id, r.Term, m.Term)
 			// TODO: handle this message
 			return nil
 		}
@@ -414,17 +399,66 @@ func (r *Raft) Step(m pb.Message) error {
 				// broadcast a heartbeat message to all peers
 				r.sendHeartbeatMessagesToOthers()
 			}
+		case pb.MessageType_MsgBeat:
+			r.sendHeartbeatMessagesToOthers()
 		}
 	}
 	return nil
 }
 
-func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
+func (r *Raft) stepLocalMsgHup(m pb.Message) error {
+	if m.From == r.id && m.To == r.id {
+		if r.State != StateLeader { //TestCampaignWhileLeader2AA
+			r.changeStateToCandidateAndAction()
+		}
+		return nil
+	}
+	return ErrInvalidMsgHup
+}
+
+func (r *Raft) stepRequestVote(m pb.Message) error {
+	if m.Term >= r.Term {
+		if m.Term > r.Term {
+			// TestVoteFromAnyState2AA
+			r.State = StateFollower
+			r.Term = m.Term
+			r.resetVoteInfo()
+		}
+
+		lastIndex := r.RaftLog.LastIndex()
+		lastTerm, err := r.RaftLog.Term(lastIndex)
+		if err != nil {
+			return ErrInvalidLogTerm
+		}
+		if m.LogTerm < lastTerm {
+			r.sendRequestVoteResponse(m.From, m.Term, true)
+			return nil
+		} else if m.LogTerm > lastTerm {
+			reject := r.handleVoteFor(m.From)
+			r.sendRequestVoteResponse(m.From, m.Term, reject)
+			return nil
+		} else {
+			if m.Index >= lastIndex {
+				reject := r.handleVoteFor(m.From)
+				r.sendRequestVoteResponse(m.From, m.Term, reject)
+				return nil
+			} else {
+				r.sendRequestVoteResponse(m.From, m.Term, true)
+				return nil
+			}
+		}
+	} else {
+		r.sendRequestVoteResponse(m.From, m.Term, true)
+		return nil
+	}
+}
+
+func (r *Raft) sendRequestVoteResponse(to uint64, term uint64, reject bool) {
 	resp := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		From:    r.id,
 		To:      to,
-		Term:    r.Term,
+		Term:    term,
 		Reject:  reject,
 	}
 	r.pushMessageToSend(resp)
@@ -466,6 +500,43 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	switch r.State {
+	case StateLeader:
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, m.From)
+			r.resetElectionTimer()
+		} else {
+			// discard this message
+		}
+	case StateFollower:
+		if m.Term > r.Term {
+			r.Term = m.Term
+			r.resetVoteInfo()
+			r.resetElectionTimer()
+			r.RaftLog.committed = m.Commit
+		} else if m.Term == r.Term {
+			r.resetElectionTimer()
+			if m.Commit > r.RaftLog.committed {
+				r.RaftLog.committed = m.Commit
+			}
+		} else {
+			// discard this message
+		}
+	case StateCandidate:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+			r.RaftLog.committed = m.Commit
+		}
+	}
+
+	resp := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		To:      m.From,
+		From:    r.id,
+		Index:   r.RaftLog.LastIndex(),
+	}
+
+	r.pushMessageToSend(resp)
 }
 
 // handleSnapshot handle Snapshot RPC request

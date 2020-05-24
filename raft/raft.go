@@ -368,10 +368,10 @@ func (r *Raft) Step(m pb.Message) error {
 	// request messages
 	case pb.MessageType_MsgRequestVote:
 		return r.stepRequestVote(m)
-	case pb.MessageType_MsgAppend:
-		return r.stepAppend(m)
 	case pb.MessageType_MsgHeartbeat:
 		return r.stepHeartbeat(m)
+	case pb.MessageType_MsgAppend:
+		return r.stepAppend(m)
 	// response messages
 	case pb.MessageType_MsgRequestVoteResponse:
 		return r.stepRequestVoteResponse(m)
@@ -472,34 +472,16 @@ func (r *Raft) sendHeartbeatMessagesToOthers() {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	r.manageStateTypeFromAppendAndHeartbeatMsg(m)
-
-	resp := pb.Message{
-		MsgType: pb.MessageType_MsgAppendResponse,
-		To:      m.From,
-		From:    r.id,
-		Term:    r.Term,
-		//LogTerm: r.RaftLog.Term(r.RaftLog.LastIndex()),
-		//Index:   r.RaftLog.LastIndex(),
-	}
-
-	r.pushMessageToSend(resp)
+	r.handleAppendOrHeartbeat(m)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	resp := pb.Message{
-		MsgType: pb.MessageType_MsgHeartbeatResponse,
-		To:      m.From,
-		From:    r.id,
-		Index:   r.RaftLog.LastIndex(),
-	}
-	r.pushMessageToSend(resp)
-	r.manageStateTypeFromAppendAndHeartbeatMsg(m)
+	r.handleAppendOrHeartbeat(m)
 }
 
-func (r *Raft) manageStateTypeFromAppendAndHeartbeatMsg(m pb.Message) {
+func (r *Raft) handleAppendOrHeartbeat(m pb.Message) {
 	switch r.State {
 	case StateLeader:
 		if m.Term >= r.Term {
@@ -528,6 +510,22 @@ func (r *Raft) manageStateTypeFromAppendAndHeartbeatMsg(m pb.Message) {
 			r.RaftLog.committed = m.Commit
 		}
 	}
+
+	// send response message
+	var respType pb.MessageType
+	if m.MsgType == pb.MessageType_MsgHeartbeat {
+		respType = pb.MessageType_MsgHeartbeatResponse
+	} else if m.MsgType == pb.MessageType_MsgAppend {
+		respType = pb.MessageType_MsgAppendResponse
+	}
+	resp := pb.Message{
+		MsgType: respType,
+		To:      m.From,
+		From:    r.id,
+		Term:    r.Term,
+		Index:   r.RaftLog.LastIndex(),
+	}
+	r.pushMessageToSend(resp)
 }
 
 // handleSnapshot handle Snapshot RPC request

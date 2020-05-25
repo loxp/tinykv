@@ -202,10 +202,12 @@ func (r *Raft) resetVoteInfo() {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	var unstableEntryPtrs []*pb.Entry
-	for _, entry := range r.RaftLog.unstableEntries() {
-		unstableEntryPtrs = append(unstableEntryPtrs, &entry)
+
+	for peerId, progress := range r.Prs {
+		progress.Match
 	}
+
+	unstableEntryPtrs := convertToEntryPtrs(r.RaftLog.unstableEntries())
 	msg := pb.Message{
 		Term:    r.Term,
 		From:    r.id,
@@ -270,14 +272,6 @@ func (r *Raft) changeStateToCandidateAndAction() {
 }
 
 func (r *Raft) isElectionTimeout() bool {
-	//timeout := r.electionTimeout + rand.Intn(r.electionTimeout+1)
-	//if r.electionElapsed >= timeout {
-	//	fmt.Printf("election timeout: %d\n", timeout)
-	//	return true
-	//} else {
-	//	return false
-	//}
-	//return r.electionElapsed >= timeout
 	return r.electionElapsed >= r.electionTimeout
 }
 
@@ -350,7 +344,6 @@ func (r *Raft) becomeLeader() {
 	r.heartbeatElapsed = 0
 	r.resetVoteInfo()
 	// NOTE: Leader should propose a noop entry on its term
-	r.sendHeartbeatMessagesToOthers()
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -388,7 +381,7 @@ func (r *Raft) Step(m pb.Message) error {
 func (r *Raft) stepLocalMsgHup(m pb.Message) error {
 	if m.From == r.id && m.To == r.id {
 		if r.State != StateLeader { //TestCampaignWhileLeader2AA
-			r.changeStateToCandidateAndAction()
+			r.changeStateToCndidateAndAction()
 		}
 		return nil
 	}
@@ -486,7 +479,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 func (r *Raft) handleAppendOrHeartbeat(m pb.Message) {
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, m.From)
-		r.adaptRaftLogs(m)
+		r.forceAdaptRaftLogs(m)
 	} else if m.Term == r.Term {
 		switch r.State {
 		case StateLeader:
@@ -498,10 +491,11 @@ func (r *Raft) handleAppendOrHeartbeat(m pb.Message) {
 			}
 		case StateCandidate:
 			r.becomeFollower(m.Term, m.From)
-			r.adaptRaftLogs(m)
+			r.forceAdaptRaftLogs(m)
 		}
 	} else {
-
+		// do nothing
+		return
 	}
 
 	// send response message
@@ -510,12 +504,13 @@ func (r *Raft) handleAppendOrHeartbeat(m pb.Message) {
 		To:      m.From,
 		From:    r.id,
 		Term:    r.Term,
+		LogTerm: r.RaftLog.LastIndexTerm(),
 		Index:   r.RaftLog.LastIndex(),
 	}
 	r.pushMessageToSend(resp)
 }
 
-func (r *Raft) adaptRaftLogs(m pb.Message) {
+func (r *Raft) forceAdaptRaftLogs(m pb.Message) {
 	r.RaftLog.committed = m.Commit
 }
 

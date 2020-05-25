@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"errors"
 	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -103,6 +104,37 @@ func (l *RaftLog) LastIndex() uint64 {
 		panic(err)
 	}
 	return idx
+}
+
+func (l *RaftLog) LastIndexTerm() uint64 {
+	term, err := l.Term(l.LastIndex())
+	if err != nil {
+		panic(errors.New("last index get term error"))
+	}
+	return term
+}
+
+func (l *RaftLog) stableAndUnstableEntries(lo, hi uint64) []*pb.Entry {
+	if lo < 0 || hi < 0 || lo > hi {
+		return nil
+	}
+
+	if lo <= l.stabled && hi <= l.stabled {
+		entries, err := l.storage.Entries(lo, hi)
+		if err != nil {
+			panic(err)
+		}
+		return convertToEntryPtrs(entries)
+	} else if lo <= l.stabled && hi > l.stabled {
+		entries, err := l.storage.Entries(lo, l.stabled)
+		if err != nil {
+			panic(err)
+		}
+		entries = append(entries, l.entries...)
+		return convertToEntryPtrs(entries)
+	} else { // lo > l.stabled && hi > l.stabled
+		return convertToEntryPtrs(l.entries)
+	}
 }
 
 // Term return the term of the entry in the given index

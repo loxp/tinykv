@@ -142,3 +142,11 @@ func getRespMsgType(reqMsgType pb.MessageType) pb.MessageType {
 	}
 }
 
+func convertToEntryPtrs(entries []pb.Entry) []*pb.Entry {
+	var unstableEntryPtrs []*pb.Entry
+	for _, entry := range entries {
+		unstableEntryPtrs = append(unstableEntryPtrs, &entry)
+	}
+	return unstableEntryPtrs
+}
+
